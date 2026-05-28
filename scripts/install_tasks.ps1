@@ -78,42 +78,66 @@ if (-not (Test-Path $baseDir)) {
 $principal = New-ScheduledTaskPrincipal -UserId "NT AUTHORITY\SYSTEM" -LogonType ServiceAccount -RunLevel Highest
 
 # =====================================================================
-# TASK 1: Silent high-frequency sync and alert (Every 15 minutes)
+# COMPREHENSIVE CLEAN-UP OF ALL LEGACY TASKS (To prevent duplicate emails)
 # =====================================================================
-Write-Host "[*] Registering Task 1: 15-Minute Sync and Alert..." -ForegroundColor Yellow
-$task1Name = "Avigilon Camera 15-Min Clock Sync and Alert"
+Write-Host "[*] Scanning for any legacy Avigilon / NVR / Camera scheduled tasks..." -ForegroundColor Yellow
 
-# Trigger: Runs once at 12:00 AM and repeats every 15 minutes indefinitely
-$syncTrigger = New-ScheduledTaskTrigger -Once -At "12:00 AM" -RepetitionInterval (New-TimeSpan -Minutes 15)
-$syncAction = New-ScheduledTaskAction -Execute $pythonPath -Argument "`"$syncScript`""
+$keepTasks = @(
+    "Avigilon Camera 5-Min Silent Watchdog",
+    "Avigilon Camera Daily Evening Email Report"
+)
 
-Register-ScheduledTask -TaskName $task1Name -Trigger $syncTrigger -Action $syncAction -Principal $principal -Force | Out-Null
+# Get all tasks that contain "Avigilon", "NVR", "Watchdog", or "Camera"
+$allTasks = Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object {
+    $_.TaskName -like "*Avigilon*" -or 
+    $_.TaskName -like "*NVR*" -or 
+    $_.TaskName -like "*Watchdog*" -or 
+    ($_.TaskName -like "*Camera*" -and $_.TaskPath -eq "\")
+}
 
-if ($?) {
-    Write-Host "[+] SUCCESS: Task '$task1Name' registered (repeats every 15 minutes)." -ForegroundColor Green
-} else {
-    Write-Host "[!] ERROR: Failed to register 15-minute sync task." -ForegroundColor Red
+foreach ($task in $allTasks) {
+    if ($keepTasks -notcontains $task.TaskName) {
+        Write-Host "[!] Found legacy task: '$($task.TaskName)' - Removing to stop spam emails..." -ForegroundColor Red
+        Unregister-ScheduledTask -TaskName $task.TaskName -Confirm:$false -ErrorAction SilentlyContinue
+    }
 }
 
 # =====================================================================
-# TASK 2: Twice-a-day full HTML and snapshot reporting (08:00 AM & 05:00 PM)
+# TASK 1: Silent high-frequency sync and alert (Every 5 minutes)
 # =====================================================================
-Write-Host "[*] Registering Task 2: Twice-Daily Email Report..." -ForegroundColor Yellow
-$task2Name = "Avigilon Camera Twice-Daily Email Report"
+$newTask1Name = "Avigilon Camera 5-Min Silent Watchdog"
 
-# Triggers: 08:00 AM and 05:00 PM
-$triggerA = New-ScheduledTaskTrigger -Daily -At "8:00 AM"
-$triggerB = New-ScheduledTaskTrigger -Daily -At "5:00 PM"
-$reportTriggers = @($triggerA, $triggerB)
+Write-Host "[*] Registering Task 1: 5-Minute Silent Watchdog..." -ForegroundColor Yellow
 
-$reportAction = New-ScheduledTaskAction -Execute $pythonPath -Argument "`"$reportScript`""
+# Trigger: Runs once at 12:00 AM and repeats every 5 minutes indefinitely
+$syncTrigger = New-ScheduledTaskTrigger -Once -At "12:00 AM" -RepetitionInterval (New-TimeSpan -Minutes 5)
+$syncAction = New-ScheduledTaskAction -Execute $pythonPath -Argument "`"$syncScript`""
 
-Register-ScheduledTask -TaskName $task2Name -Trigger $reportTriggers -Action $reportAction -Principal $principal -Force | Out-Null
+Register-ScheduledTask -TaskName $newTask1Name -Trigger $syncTrigger -Action $syncAction -Principal $principal -Force | Out-Null
 
 if ($?) {
-    Write-Host "[+] SUCCESS: Task '$task2Name' registered (runs at 08:00 AM and 05:00 PM)." -ForegroundColor Green
+    Write-Host "[+] SUCCESS: Task '$newTask1Name' registered (repeats every 5 minutes)." -ForegroundColor Green
 } else {
-    Write-Host "[!] ERROR: Failed to register twice-daily reporting task." -ForegroundColor Red
+    Write-Host "[!] ERROR: Failed to register 5-minute watchdog task." -ForegroundColor Red
+}
+
+# =====================================================================
+# TASK 2: Daily Evening HTML and Time Sync Reporting (05:00 PM)
+# =====================================================================
+$newTask2Name = "Avigilon Camera Daily Evening Email Report"
+
+Write-Host "[*] Registering Task 2: Daily Evening Email Report..." -ForegroundColor Yellow
+
+# Trigger: Runs daily at 5:00 PM (17:00 น.)
+$reportTrigger = New-ScheduledTaskTrigger -Daily -At "5:00 PM"
+$reportAction = New-ScheduledTaskAction -Execute $pythonPath -Argument "`"$reportScript`""
+
+Register-ScheduledTask -TaskName $newTask2Name -Trigger $reportTrigger -Action $reportAction -Principal $principal -Force | Out-Null
+
+if ($?) {
+    Write-Host "[+] SUCCESS: Task '$newTask2Name' registered (runs daily at 05:00 PM)." -ForegroundColor Green
+} else {
+    Write-Host "[!] ERROR: Failed to register daily evening reporting task." -ForegroundColor Red
 }
 
 Write-Host "==========================================================" -ForegroundColor Cyan

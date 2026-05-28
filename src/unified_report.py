@@ -236,7 +236,7 @@ def build_table_html(results):
     return table_content
 
 def process_downtime_events():
-    """Reads and formats downtime events for the report, then clears the file."""
+    """Reads and formats downtime events, generates a retro timeline chart, then clears the file."""
     events = []
     if os.path.exists(DOWNTIME_FILE):
         try:
@@ -249,8 +249,12 @@ def process_downtime_events():
             print(f"Error reading downtime events: {e}")
             
     if not events:
-        return "NO DOWNTIME EVENTS OR FLAPPING DETECTED SINCE LAST REPORT."
+        return (
+            "NO DOWNTIME EVENTS OR FLAPPING DETECTED SINCE LAST REPORT.",
+            "ALL CAMERA NODES STABLE. NO FLAPPING BEHAVIOR TO PLOT."
+        )
         
+    # 1. Generate Raw Log Content
     log_content = ""
     for ev in events:
         timestamp = ev.get('timestamp', '').ljust(20)
@@ -266,8 +270,66 @@ def process_downtime_events():
             event_styled = f'<span style="color: #ffaa00;">{event_desc}</span>'
             
         log_content += f"{timestamp}| {ip}| {event_styled}\n"
+
+    # 2. Generate Retro Analytics Timeline Chart (Flapping & Instability Analysis)
+    # Group events by IP, then count disconnects ("ONLINE -> OFFLINE") per hour
+    camera_data = {}
+    for ev in events:
+        ip = ev.get('ip')
+        ts_str = ev.get('timestamp')
+        event_desc = ev.get('event', '')
+        if not ip or not ts_str:
+            continue
+        try:
+            dt = datetime.strptime(ts_str, '%Y-%m-%d %H:%M:%S')
+            hour = dt.hour
+        except:
+            continue
+            
+        if ip not in camera_data:
+            camera_data[ip] = {
+                "total_drops": 0,
+                "hourly_drops": [0] * 24
+            }
+            
+        # Count a "drop" when the state transitions to OFFLINE
+        if "OFFLINE" in event_desc.split("->")[1]:
+            camera_data[ip]["total_drops"] += 1
+            camera_data[ip]["hourly_drops"][hour] += 1
+
+    # Sort cameras by total drops descending
+    sorted_cameras = sorted(camera_data.items(), key=lambda x: x[1]["total_drops"], reverse=True)
+    
+    chart_content = "IP ADDRESS      | DROPS | 24-HOUR HOURLY FLAPPING HISTOGRAM (00:00 - 23:00)\n"
+    chart_content += "----------------|-------|---------------------------------------------------------\n"
+    
+    has_drops = False
+    for ip, data in sorted_cameras:
+        if data["total_drops"] == 0:
+            continue
+        has_drops = True
+        ip_padded = ip.ljust(15)
+        drops_padded = str(data["total_drops"]).rjust(5)
         
-    return log_content
+        timeline = ""
+        for hour in range(24):
+            count = data["hourly_drops"][hour]
+            if count == 0:
+                timeline += "░░"  # Clean stable hour
+            elif count <= 2:
+                timeline += '<span style="color: #ffaa00;">▄▄</span>'  # Moderate flapping
+            else:
+                timeline += '<span style="color: #ff3333;">██</span>'  # Critical flapping
+                
+        chart_content += f"{ip_padded} |{drops_padded} | {timeline}\n"
+        
+    if not has_drops:
+        chart_content = "ALL NODES COMPLETED PERIOD WITHOUT PACKET LOSS OR HARD REBOOT EVENTS."
+    else:
+        chart_content += "--------------------------------------------------------------------------\n"
+        chart_content += "Chart Legend: ░░ = Stable (0 drops) | <span style=\"color: #ffaa00;\">▄▄</span> = Moderate Flapping (1-2 drops) | <span style=\"color: #ff3333;\">██</span> = Critical (3+ drops)"
+        
+    return log_content, chart_content
 
 def generate_report_cli_html(nvr_time, nvr_internet, nvr1_results, nvr2_results):
     nvr1_total = len(nvr1_results)
@@ -291,7 +353,7 @@ def generate_report_cli_html(nvr_time, nvr_internet, nvr1_results, nvr2_results)
     
     nvr1_table = build_table_html(nvr1_results)
     nvr2_table = build_table_html(nvr2_results)
-    downtime_log_html = process_downtime_events()
+    downtime_log_html, downtime_chart_html = process_downtime_events()
     
     html = f"""<!DOCTYPE html>
     <html>
@@ -331,9 +393,15 @@ NVR 2 (10.0.3.137)  : <span style="color: #00ff66;">[{make_ascii_bar(nvr2_ratio)
 OVERALL CONNECTIVITY: <span style="color: #00ffff;">[{make_ascii_bar(overall_online_ratio)}] {total_online:02d} / {total_cameras:02d} Online ({int(overall_online_ratio*100)}%)</span>
 CLOCK SYNCHRONY RATE: <span style="color: #00f5ff;">[{make_ascii_bar(overall_sync_ratio)}] {total_synced:02d} / {total_cameras:02d} Synced ({int(overall_sync_ratio*100)}%)</span></pre>
 
-            <!-- SECTION: FLAPPING AND DOWNTIME LOG -->
+            <!-- SECTION: FLAPPING CHART & ANALYTICS -->
             <pre style="margin: 0 0 10px 0; padding: 0; font-family: inherit; color: #ffaa00; font-weight: bold;">
-[SECTION 0: CAMERA INSTABILITY & DOWNTIME EVENTS (SINCE LAST REPORT)]</pre>
+[SECTION 0-A: CAMERA INSTABILITY & FLAPPING HISTOGRAM (24-HOUR ANALYSIS)]</pre>
+            <pre style="margin: 0 0 25px 0; padding: 15px; font-family: inherit; color: #e5e9f0; background-color: #05080c; border: 1px solid #2b1f0d; border-radius: 4px; overflow-x: auto; white-space: pre;">
+{downtime_chart_html}</pre>
+
+            <!-- SECTION: DOWNTIME EVENT LOG -->
+            <pre style="margin: 0 0 10px 0; padding: 0; font-family: inherit; color: #ffaa00; font-weight: bold;">
+[SECTION 0-B: RAW INSTABILITY & DOWNTIME EVENT LOG (CHRONOLOGICAL)]</pre>
             <pre style="margin: 0 0 25px 0; padding: 0; font-family: inherit; color: #e5e9f0; overflow-x: auto; white-space: pre;">
 {downtime_log_html}</pre>
 
