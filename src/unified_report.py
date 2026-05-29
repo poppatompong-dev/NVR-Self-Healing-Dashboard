@@ -21,19 +21,19 @@ SMTP_PASSWORD = "yqkmfuoonilelecm"
 SENDER_EMAIL = "poppatompong@gmail.com"
 RECIPIENT_EMAIL = "poppatompong@gmail.com"
 
-# NVR 1 Camera List (11 Cameras)
+# NVR 1 (10.0.3.137) Camera List (22 Cameras - skipping Gateway/Switch .254)
 NVR1_IPS = [
-    "10.0.3.147", "10.0.3.154", "10.0.3.158", "10.0.3.161", "10.0.3.164", 
-    "10.0.3.167", "10.0.3.170", "10.0.3.173", "10.0.3.176", "10.0.3.179", "10.0.3.180"
-]
-
-# NVR 2 Camera List (22 Cameras - skipping Gateway/Switch .254)
-NVR2_IPS = [
     "10.0.3.148", "10.0.3.149", "10.0.3.150", "10.0.3.152", "10.0.3.153", 
     "10.0.3.155", "10.0.3.156", "10.0.3.157", "10.0.3.159", "10.0.3.160", 
     "10.0.3.162", "10.0.3.163", "10.0.3.165", "10.0.3.166", "10.0.3.168", 
     "10.0.3.169", "10.0.3.171", "10.0.3.172", "10.0.3.174", "10.0.3.175", 
     "10.0.3.177", "10.0.3.178"
+]
+
+# NVR 2 (10.0.3.138) Camera List (11 Cameras)
+NVR2_IPS = [
+    "10.0.3.147", "10.0.3.154", "10.0.3.158", "10.0.3.161", "10.0.3.164", 
+    "10.0.3.167", "10.0.3.170", "10.0.3.173", "10.0.3.176", "10.0.3.179", "10.0.3.180"
 ]
 
 BASE_DIR = r"D:\avigilon_ntp_tools"
@@ -52,7 +52,7 @@ headers = {'Content-Type': 'application/soap+xml; charset=utf-8'}
 
 def get_camera_creds(ip):
     """Dynamic credentials lookup for cameras across both NVRs."""
-    if ip in NVR1_IPS:
+    if ip in NVR2_IPS:
         return "administrator", "Admin1234"
     admin_123_ips = ["10.0.3.148", "10.0.3.156", "10.0.3.160", "10.0.3.171", "10.0.3.174", "10.0.3.175"]
     if ip in admin_123_ips:
@@ -331,6 +331,75 @@ def process_downtime_events():
         
     return log_content, chart_content
 
+def get_nas_and_drives_status():
+    """Checks the network connection to NAS (10.0.1.202) and maps all local/network drive metrics on the NVR."""
+    nas_ip = "10.0.1.202"
+    nas_name = "CCTV_NSM_CLOUD_NAS"
+    
+    # Run a quick ping check to NAS
+    try:
+        response = os.system(f"ping -n 1 -w 1000 {nas_ip} > nul")
+        nas_online = response == 0
+    except:
+        nas_online = False
+        
+    nas_status_styled = '<span style="color: #00ff66;">ONLINE</span>' if nas_online else '<span style="color: #ff3333;">OFFLINE (Unreachable)</span>'
+    
+    nas_summary = f"NAS HARDWARE HOSTNAME: {nas_name:<20} | IP: {nas_ip:<15} | STATUS: {nas_status_styled}\n"
+    nas_summary += "------------------------------------------------------------------------------------------------------------\n"
+    nas_summary += "DRIVE | TYPE    | VOLUME SIZE | FREE SPACE | USED SPACE | USED % | STATUS\n"
+    nas_summary += "------|---------|-------------|------------|------------|--------|--------------------------------------\n"
+    
+    has_drives = False
+    # Drive types: 3 = DRIVE_FIXED, 4 = DRIVE_REMOTE (Network mapped)
+    for char_code in range(65, 91):
+        drive = f"{chr(char_code)}:\\"
+        try:
+            drive_type = ctypes.windll.kernel32.GetDriveTypeW(ctypes.c_wchar_p(drive))
+            if drive_type in [3, 4]:
+                has_drives = True
+                type_str = "Network" if drive_type == 4 else "Local"
+                type_styled = f'<span style="color: #00ffff;">{type_str:<7}</span>' if drive_type == 4 else f"{type_str:<7}"
+                
+                # Get space
+                free_bytes = ctypes.c_ulonglong(0)
+                total_bytes = ctypes.c_ulonglong(0)
+                total_free_bytes = ctypes.c_ulonglong(0)
+                success = ctypes.windll.kernel32.GetDiskFreeSpaceExW(
+                    ctypes.c_wchar_p(drive),
+                    ctypes.byref(free_bytes),
+                    ctypes.byref(total_bytes),
+                    ctypes.byref(total_free_bytes)
+                )
+                
+                if success:
+                    total_gb = total_bytes.value / (1024**3)
+                    free_gb = total_free_bytes.value / (1024**3)
+                    used_gb = total_gb - free_gb
+                    used_percent = (used_gb / total_gb) * 100 if total_gb > 0 else 0
+                    
+                    if total_gb > 1000:
+                        total_str = f"{total_gb/1024:.2f} TB"
+                        free_str = f"{free_gb/1024:.2f} TB"
+                        used_str = f"{used_gb/1024:.2f} TB"
+                    else:
+                        total_str = f"{total_gb:.1f} GB"
+                        free_str = f"{free_gb:.1f} GB"
+                        used_str = f"{used_gb:.1f} GB"
+                        
+                    status_str = '<span style="color: #00ff66;">ONLINE</span>'
+                    nas_summary += f"{chr(char_code):<5} | {type_styled} | {total_str:>11} | {free_str:>10} | {used_str:>10} | {used_percent:>5.1f}% | {status_str}\n"
+                else:
+                    status_str = '<span style="color: #ff3333;">DISCONNECTED (NAS storage mapping lost)</span>'
+                    nas_summary += f"{chr(char_code):<5} | {type_styled} | {'-':>11} | {'-':>10} | {'-':>10} | {'-':>5} | {status_str}\n"
+        except:
+            pass
+            
+    if not has_drives:
+        nas_summary += "NO ACTIVE DRIVES OR STORAGE VOLUMES DETECTED.\n"
+        
+    return nas_summary
+
 def generate_report_cli_html(nvr_time, nvr_internet, nvr1_results, nvr2_results):
     nvr1_total = len(nvr1_results)
     nvr1_online = sum(1 for r in nvr1_results if r["online"])
@@ -354,6 +423,7 @@ def generate_report_cli_html(nvr_time, nvr_internet, nvr1_results, nvr2_results)
     nvr1_table = build_table_html(nvr1_results)
     nvr2_table = build_table_html(nvr2_results)
     downtime_log_html, downtime_chart_html = process_downtime_events()
+    nas_diagnostics_html = get_nas_and_drives_status()
     
     html = f"""<!DOCTYPE html>
     <html>
@@ -387,8 +457,8 @@ CORE ENGINE STATUS  : <span style="color: #00ff66; font-weight: bold;">STANDBY &
             <pre style="margin: 0 0 25px 0; padding: 15px; font-family: inherit; color: #00ff66; background-color: #05080c; border: 1px solid #14251c; border-radius: 4px;">
 <span style="color: #8892b0; font-weight: bold;">[================================ SYSTEM HEALTH STATUS CHARTS ================================]</span>
 
-NVR 1 (10.0.3.138)  : <span style="color: #00ff66;">[{make_ascii_bar(nvr1_ratio)}] {nvr1_online:02d} / {nvr1_total:02d} Online ({int(nvr1_ratio*100)}%)</span>
-NVR 2 (10.0.3.137)  : <span style="color: #00ff66;">[{make_ascii_bar(nvr2_ratio)}] {nvr2_online:02d} / {nvr2_total:02d} Online ({int(nvr2_ratio*100)}%)</span>
+NVR 1 (10.0.3.137)  : <span style="color: #00ff66;">[{make_ascii_bar(nvr1_ratio)}] {nvr1_online:02d} / {nvr1_total:02d} Online ({int(nvr1_ratio*100)}%)</span>
+NVR 2 (10.0.3.138)  : <span style="color: #00ff66;">[{make_ascii_bar(nvr2_ratio)}] {nvr2_online:02d} / {nvr2_total:02d} Online ({int(nvr2_ratio*100)}%)</span>
 
 OVERALL CONNECTIVITY: <span style="color: #00ffff;">[{make_ascii_bar(overall_online_ratio)}] {total_online:02d} / {total_cameras:02d} Online ({int(overall_online_ratio*100)}%)</span>
 CLOCK SYNCHRONY RATE: <span style="color: #00f5ff;">[{make_ascii_bar(overall_sync_ratio)}] {total_synced:02d} / {total_cameras:02d} Synced ({int(overall_sync_ratio*100)}%)</span></pre>
@@ -407,7 +477,7 @@ CLOCK SYNCHRONY RATE: <span style="color: #00f5ff;">[{make_ascii_bar(overall_syn
 
             <!-- SECTION 1: NVR 1 -->
             <pre style="margin: 0 0 10px 0; padding: 0; font-family: inherit; color: #00ffff; font-weight: bold;">
-[SECTION 1: NVR 10.0.3.138 (MASTER NVR) -- {nvr1_online}/{nvr1_total} CAMERAS ONLINE]</pre>
+[SECTION 1: NVR 10.0.3.137 (MASTER NVR) -- {nvr1_online}/{nvr1_total} CAMERAS ONLINE]</pre>
             <pre style="margin: 0 0 25px 0; padding: 0; font-family: inherit; color: #e5e9f0; overflow-x: auto; white-space: pre;">
 <span style="color: #8892b0; font-weight: bold;">CAMERA IP       | NET-STAT | CAMERA TIME (LOCAL) | OFFSET           | STATUS  | TASK ACTION</span>
 ------------------------------------------------------------------------------------------------------------
@@ -415,11 +485,17 @@ CLOCK SYNCHRONY RATE: <span style="color: #00f5ff;">[{make_ascii_bar(overall_syn
 
             <!-- SECTION 2: NVR 2 -->
             <pre style="margin: 0 0 10px 0; padding: 0; font-family: inherit; color: #00ffff; font-weight: bold;">
-[SECTION 2: NVR 10.0.3.137 (CLIENT NVR) -- {nvr2_online}/{nvr2_total} CAMERAS ONLINE]</pre>
+[SECTION 2: NVR 10.0.3.138 (CLIENT NVR) -- {nvr2_online}/{nvr2_total} CAMERAS ONLINE]</pre>
             <pre style="margin: 0 0 20px 0; padding: 0; font-family: inherit; color: #e5e9f0; overflow-x: auto; white-space: pre;">
 <span style="color: #8892b0; font-weight: bold;">CAMERA IP       | NET-STAT | CAMERA TIME (LOCAL) | OFFSET           | STATUS  | TASK ACTION</span>
 ------------------------------------------------------------------------------------------------------------
 {nvr2_table}------------------------------------------------------------------------------------------------------------</pre>
+ 
+            <!-- SECTION 3: NETWORK ATTACHED STORAGE (NAS) STATUS & VOLUMES -->
+            <pre style="margin: 0 0 10px 0; padding: 0; font-family: inherit; color: #00ffff; font-weight: bold;">
+[SECTION 3: NETWORK ATTACHED STORAGE (NAS) STATUS & VOLUMES]</pre>
+            <pre style="margin: 0 0 20px 0; padding: 15px; font-family: inherit; color: #e5e9f0; background-color: #05080c; border: 1px solid #1f2d3d; border-radius: 4px; overflow-x: auto; white-space: pre;">
+{nas_diagnostics_html}</pre>
 
             <pre style="margin: 20px 0 0 0; padding: 0; font-family: inherit; color: #5f6a80; font-size: 11px; text-align: center;">
 ====================================================================================================

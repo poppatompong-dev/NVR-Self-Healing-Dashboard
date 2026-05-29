@@ -10,17 +10,19 @@ from requests.auth import HTTPDigestAuth
 from concurrent.futures import ThreadPoolExecutor
 
 # ==================== CONFIGURATION ====================
+# NVR 1 (10.0.3.137) Camera List (22 Cameras - skipping Gateway/Switch .254)
 NVR1_IPS = [
-    "10.0.3.147", "10.0.3.154", "10.0.3.158", "10.0.3.161", "10.0.3.164", 
-    "10.0.3.167", "10.0.3.170", "10.0.3.173", "10.0.3.176", "10.0.3.179", "10.0.3.180"
-]
-
-NVR2_IPS = [
     "10.0.3.148", "10.0.3.149", "10.0.3.150", "10.0.3.152", "10.0.3.153", 
     "10.0.3.155", "10.0.3.156", "10.0.3.157", "10.0.3.159", "10.0.3.160", 
     "10.0.3.162", "10.0.3.163", "10.0.3.165", "10.0.3.166", "10.0.3.168", 
     "10.0.3.169", "10.0.3.171", "10.0.3.172", "10.0.3.174", "10.0.3.175", 
     "10.0.3.177", "10.0.3.178"
+]
+
+# NVR 2 (10.0.3.138) Camera List (11 Cameras)
+NVR2_IPS = [
+    "10.0.3.147", "10.0.3.154", "10.0.3.158", "10.0.3.161", "10.0.3.164", 
+    "10.0.3.167", "10.0.3.170", "10.0.3.173", "10.0.3.176", "10.0.3.179", "10.0.3.180"
 ]
 
 ALL_CAMERAS = NVR1_IPS + NVR2_IPS
@@ -39,7 +41,7 @@ headers = {'Content-Type': 'application/soap+xml; charset=utf-8'}
 
 def get_camera_creds(ip):
     """Dynamic credentials lookup for cameras across both NVRs."""
-    if ip in NVR1_IPS:
+    if ip in NVR2_IPS:
         return "administrator", "Admin1234"
     admin_123_ips = ["10.0.3.148", "10.0.3.156", "10.0.3.160", "10.0.3.171", "10.0.3.174", "10.0.3.175"]
     if ip in admin_123_ips:
