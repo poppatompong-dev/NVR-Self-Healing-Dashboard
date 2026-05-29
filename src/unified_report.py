@@ -332,9 +332,9 @@ def process_downtime_events():
     return log_content, chart_content
 
 def get_nas_and_drives_status():
-    """Checks the network connection to NAS (10.0.1.202) and maps all local/network drive metrics on the NVR."""
-    nas_ip = "10.0.1.202"
-    nas_name = "CCTV_NSM_CLOUD_NAS"
+    """Checks the network connection to NAS (10.0.3.139) and maps all local/network drive metrics on the NVR."""
+    nas_ip = "10.0.3.139"
+    nas_name = "NSM_NAS_SA3400"
     
     # Run a quick ping check to NAS
     try:
