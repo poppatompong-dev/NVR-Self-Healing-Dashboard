@@ -140,6 +140,30 @@ if ($?) {
     Write-Host "[!] ERROR: Failed to register daily evening reporting task." -ForegroundColor Red
 }
 
+# =====================================================================
+# TASK 3: Persistent Web Dashboard & Cloud Agent (At Boot Startup)
+# =====================================================================
+$newTask3Name = "Avigilon NVR Web Dashboard Agent"
+$dashboardScript = "$baseDir\src\web_dashboard.py"
+
+Write-Host "[*] Registering Task 3: Persistent Web Dashboard Agent..." -ForegroundColor Yellow
+
+# Trigger: Runs automatically when the NVR machine boots up
+$dashboardTrigger = New-ScheduledTaskTrigger -AtStartup
+$dashboardAction = New-ScheduledTaskAction -Execute $pythonPath -Argument "`"$dashboardScript`""
+
+# Task Settings: Set ExecutionTimeLimit to 0 (Unlimited/Infinite execution) so the server never shuts down
+$taskSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 99 -RestartInterval (New-TimeSpan -Minutes 2)
+
+Register-ScheduledTask -TaskName $newTask3Name -Trigger $dashboardTrigger -Action $dashboardAction -Principal $principal -Settings $taskSettings -Force | Out-Null
+
+if ($?) {
+    Write-Host "[+] SUCCESS: Task '$newTask3Name' registered (starts automatically at system boot and runs 24/7)." -ForegroundColor Green
+} else {
+    Write-Host "[!] ERROR: Failed to register persistent web dashboard agent task." -ForegroundColor Red
+}
+
 Write-Host "==========================================================" -ForegroundColor Cyan
-Write-Host "Installation completed. Both tasks registered successfully!" -ForegroundColor Green
+Write-Host "Installation completed. All 3 tasks registered successfully!" -ForegroundColor Green
 Write-Host "==========================================================" -ForegroundColor Cyan
+
