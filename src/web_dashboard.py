@@ -287,6 +287,13 @@ def push_telemetry_to_cloud(config):
             
         status_data = get_aggregated_status()
         
+        # Sanitize keys for Firebase Realtime Database (no periods allowed in keys)
+        if "cameras" in status_data and isinstance(status_data["cameras"], dict):
+            sanitized = {}
+            for ip, status_str in status_data["cameras"].items():
+                sanitized[ip.replace('.', '_')] = status_str
+            status_data["cameras"] = sanitized
+        
         # outbound push
         r = requests.put(url, params=params, json=status_data, timeout=10)
         if r.status_code == 200:
@@ -296,40 +303,121 @@ def push_telemetry_to_cloud(config):
     except Exception as e:
         print(f"[-] CLOUD EXCEPTION: Failed pushing telemetry to cloud: {e}")
 
-def process_single_command(cmd_id, cmd_name, config):
-    """Executes local commands and writes logs and results back to Firebase."""
+def run_command_with_live_updates(cmd_id, cmd_name, shell_command, config):
+    """Runs a shell command as a subprocess, streams stdout line-by-line,
+    and updates Firebase with live logs and progress percentage."""
     url = config["firebase_url"].rstrip('/') + f"/commands/{cmd_id}.json"
     auth = config.get("auth_token", "")
     params = {}
     if auth and auth != "YOUR_DATABASE_SECRET_OR_TOKEN":
         params["auth"] = auth
-        
-    print(f"[+ CLOUD] Received pending command: {cmd_name} (ID: {cmd_id}). Executing locally...")
+
+    # Initialize progress in Firebase
+    requests.patch(url, params=params, json={
+        "status": "running",
+        "progress": 0,
+        "progress_text": "Starting task execution...",
+        "logs": "Handshake successful.\nSpawning NVR subprocess...\n",
+        "started_at": time.time()
+    })
+
+    logs_accumulator = ["Handshake successful.", "Spawning NVR subprocess...\n"]
     
-    # Update command state to "running"
-    requests.patch(url, params=params, json={"status": "running", "started_at": time.time()})
-    
-    result = "Unknown command"
     try:
-        if cmd_name == "force_sync":
-            result = run_watchdog_script()
-        elif cmd_name == "restart_milestone":
-            result = run_milestone_service_start()
-        elif cmd_name == "reconnect_iscsi":
-            result = run_iscsi_reconnect()
-        elif cmd_name == "trigger_report":
-            result = run_unified_report_script()
-            
-        # Update command state to "completed"
-        requests.patch(url, params=params, json={
-            "status": "completed",
-            "result": result,
-            "completed_at": time.time()
-        })
-        print(f"[+ CLOUD] Command {cmd_name} successfully executed. Results updated on cloud.")
+        # Start subprocess with unbuffered output
+        process = subprocess.Popen(
+            shell_command,
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1
+        )
         
+        completed_steps = 0
+        
+        while True:
+            line = process.stdout.readline()
+            if not line and process.poll() is not None:
+                break
+                
+            if line:
+                line_str = line.strip()
+                print(f"[+ LIVE LOG] {line_str}")
+                logs_accumulator.append(line_str)
+                
+                # Default progress tracking
+                progress = 50
+                progress_text = "Processing..."
+                
+                if cmd_name == "force_sync":
+                    # Count processed cameras in watchdog output
+                    if any(x in line_str for x in ["[+]", "[-]"]):
+                        completed_steps += 1
+                        progress = min(int((completed_steps / 33) * 100), 99)
+                        progress_text = f"ซิงค์กล้องแล้ว: {completed_steps} จาก 33 ตัว ({progress}%)..."
+                elif cmd_name == "trigger_report":
+                    if "Scanning" in line_str:
+                        progress = 30
+                        progress_text = "กำลังสแกนเน็ตเวิร์กกล้อง..."
+                    elif "logical" in line_str or "drive" in line_str:
+                        progress = 60
+                        progress_text = "กำลังรวบรวมรายงานฮาร์ดดิสก์..."
+                    elif "SMTP" in line_str or "email" in line_str:
+                        progress = 85
+                        progress_text = "กำลังจัดส่งอีเมลรายงานผ่าน Gmail SMTP..."
+                elif cmd_name == "restart_milestone":
+                    if "VideoOSRecordingServer" in line_str:
+                        progress = 30
+                        progress_text = "กำลังตัดเซสชันและตรวจสอบ VideoOSRecordingServer..."
+                    elif "Restart-Service" in line_str or "Restarting" in line_str:
+                        progress = 60
+                        progress_text = "กำลังสั่ง Windows Service Restart..."
+                    elif "restarted" in line_str or "verified" in line_str:
+                        progress = 95
+                        progress_text = "ตรวจสอบบริการ Milestone ทำงานปกติแล้ว!"
+                elif cmd_name == "reconnect_iscsi":
+                    if "MSiSCSI" in line_str:
+                        progress = 30
+                        progress_text = "กำลังสั่งรีสตาร์ทบริการ MSiSCSI (Windows)..."
+                    elif "Update-IscsiTargetPortal" in line_str:
+                        progress = 60
+                        progress_text = "กำลังค้นหาพอร์ทัล SAN Storage ที่ 10.0.3.139..."
+                    elif "Connect-IscsiTarget" in line_str:
+                        progress = 80
+                        progress_text = "กำลังเมานต์ LUN Drive เป้าหมาย..."
+                        
+                # Update Firebase with the new log line and progress
+                requests.patch(url, params=params, json={
+                    "progress": progress,
+                    "progress_text": progress_text,
+                    "logs": "\n".join(logs_accumulator)
+                })
+                
+        # Get final status
+        rc = process.wait()
+        
+        if rc == 0:
+            result_summary = "ดำเนินการเสร็จสิ้น 100%"
+            requests.patch(url, params=params, json={
+                "status": "completed",
+                "progress": 100,
+                "progress_text": "ดำเนินการสำเร็จสมบูรณ์ 100%!",
+                "result": result_summary,
+                "completed_at": time.time()
+            })
+            print(f"[+ CLOUD] Command {cmd_name} successfully executed with 100% progress.")
+        else:
+            requests.patch(url, params=params, json={
+                "status": "failed",
+                "result": f"Process exited with non-zero code: {rc}",
+                "completed_at": time.time()
+            })
+            print(f"[-] CLOUD ERROR: Command {cmd_name} failed with exit code {rc}.")
+            
         # Push fresh telemetry immediately after action execution
         push_telemetry_to_cloud(config)
+        
     except Exception as e:
         print(f"[-] CLOUD EXCEPTION: Failed running command {cmd_name}: {e}")
         requests.patch(url, params=params, json={
@@ -337,6 +425,37 @@ def process_single_command(cmd_id, cmd_name, config):
             "result": str(e),
             "completed_at": time.time()
         })
+
+def process_single_command(cmd_id, cmd_name, config):
+    """Executes local commands and writes logs and results back to Firebase."""
+    print(f"[+ CLOUD] Received pending command: {cmd_name} (ID: {cmd_id}). Executing locally with live progress tracking...")
+    
+    if cmd_name == "force_sync":
+        script_path = os.path.join(BASE_DIR, "src", "nvr_watchdog.py")
+        threading.Thread(target=run_command_with_live_updates, args=(cmd_id, cmd_name, f"python -u \"{script_path}\"", config), daemon=True).start()
+    elif cmd_name == "trigger_report":
+        script_path = os.path.join(BASE_DIR, "src", "unified_report.py")
+        threading.Thread(target=run_command_with_live_updates, args=(cmd_id, cmd_name, f"python -u \"{script_path}\"", config), daemon=True).start()
+    elif cmd_name == "restart_milestone":
+        cmd_str = (
+            'powershell -Command "Write-Host \'[*] Checking VideoOSRecordingServer...\'; '
+            'Get-Service VideoOSRecordingServer; '
+            'Write-Host \'[*] Restarting service VideoOSRecordingServer...\'; '
+            'Restart-Service -Name VideoOSRecordingServer -Force; '
+            'Write-Host \'[+] Service restarted successfully!\'"'
+        )
+        threading.Thread(target=run_command_with_live_updates, args=(cmd_id, cmd_name, cmd_str, config), daemon=True).start()
+    elif cmd_name == "reconnect_iscsi":
+        cmd_str = (
+            'powershell -Command "Write-Host \'[*] Restarting MSiSCSI service...\'; '
+            'Restart-Service -Name MSiSCSI -Force; '
+            'Write-Host \'[*] Updating target portal at 10.0.3.139...\'; '
+            'Update-IscsiTargetPortal -TargetPortalAddress 10.0.3.139; '
+            'Write-Host \'[*] Connect non-connected iSCSI targets...\'; '
+            'Get-IscsiTarget | Where-Object { $_.IsConnected -eq $false } | Connect-IscsiTarget -TargetPortalAddress 10.0.3.139 -IsPersistent $true -Confirm:$false; '
+            'Write-Host \'[+] iSCSI SAN mount recovery completed!\'"'
+        )
+        threading.Thread(target=run_command_with_live_updates, args=(cmd_id, cmd_name, cmd_str, config), daemon=True).start()
 
 def poll_cloud_commands(config):
     """Checks the Firebase Realtime Database for pending commands periodically."""

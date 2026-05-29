@@ -1080,7 +1080,7 @@
         tableBody.innerHTML = '';
         
         ALL_CAMERAS.forEach(ip => {
-            const status = cameras[ip] || "OFFLINE";
+            const status = (cameras && (cameras[ip] || cameras[ip.replace(/\./g, '_')])) || "OFFLINE";
             const isOnline = status === "ONLINE" || status === "SYNCED" || status === "OK" || status === "SKEWED";
             const isSynced = status === "ONLINE" || status === "SYNCED" || status === "OK";
             
@@ -1202,7 +1202,7 @@
         }
     }
 
-    // --- SECURE DYNAMIC COMMAND QUEUE DISPATCHER ---
+    // --- SECURE DYNAMIC COMMAND QUEUE DISPATCHER WITH PROGRESSIVE LIVE CONSOLE ---
     async function dispatchCloudCommand(commandName) {
         const btnMap = {
             'force_sync': 'btnSyncTime',
@@ -1215,8 +1215,27 @@
         const origText = btn.innerHTML;
         
         btn.disabled = true;
-        btn.innerHTML = `<span class="spinner"></span> ส่งสัญญาณเข้ารหัสคิว...`;
-        showToast('กำลังจัดคิวส่งคำสั่งไปยัง Firebase Realtime Database...', 'info');
+        btn.innerHTML = `<span class="spinner"></span> จัดคิวคำสั่ง...`;
+        
+        // Show Retro Terminal Console Modal immediately
+        const modal = document.getElementById('terminalModal');
+        const termLog = document.getElementById('terminalLogBox');
+        const termProgText = document.getElementById('terminalProgressText');
+        const termProgPct = document.getElementById('terminalProgressPct');
+        const termBar = document.getElementById('terminalProgressBar');
+        const termBadge = document.getElementById('terminalStatusBadge');
+        const closeBtn = document.getElementById('terminalCloseBtn');
+        
+        modal.style.display = 'flex';
+        termBadge.innerText = 'QUEUED';
+        termBadge.className = 'badge warning';
+        termProgText.innerText = 'กำลังส่งคำสั่งผ่านระบบรักษาความปลอดภัยไปยัง Cloud...';
+        termProgPct.innerText = '0%';
+        termBar.style.width = '0%';
+        termLog.innerText = `[SYSTEM HANDSHAKE START]\nInitializing connection to Firebase Cloud Realtime Queue...\nTarget action: ${commandName}\nStatus: Enqueue pending...`;
+        closeBtn.disabled = true;
+        
+        showToast('กำลังส่งสัญญาณไปยัง Firebase Realtime Database...', 'info');
         
         const cmdId = 'cmd_' + Date.now();
         const cleanUrl = FIREBASE_URL.replace(/\/$/, '') + `/commands/${cmdId}.json`;
@@ -1232,23 +1251,28 @@
             const r = await fetch(requestUrl, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
-                body: json = JSON.stringify(payload)
+                body: JSON.stringify(payload)
             });
             
             if (!r.ok) throw new Error('Failed to push command to Firebase Realtime Database');
             
-            showToast('คำสั่งอยู่ในสถานะ "รอดำเนินงาน" (Pending) ในคลาวด์แล้ว กำลังรอ NVR Agent ตอบรับ...', 'info');
-            btn.innerHTML = `<span class="spinner"></span> รอ NVR รันงาน (Pending)...`;
+            showToast('คำสั่งจัดคิวบนคลาวด์แล้ว กำลังรอ NVR Agent ตอบรับ...', 'info');
+            termLog.innerText += `\n[+] คำสั่งถูกจัดคิวเข้าระบบสำเร็จ (ID: ${cmdId})\nWaiting for NVR agent loop to poll command queue (Every 5 seconds outbound check)...`;
             
             // Start checking for command execution status (Command Queue listening polling loop)
             let pollCounter = 0;
             const poller = setInterval(async () => {
                 pollCounter++;
-                if (pollCounter > 24) { // Timeout after 2 minutes
+                if (pollCounter > 40) { // Timeout after ~3.3 minutes
                     clearInterval(poller);
                     btn.disabled = false;
                     btn.innerHTML = origText;
-                    showToast(' NVR Agent ตอบรับคำสั่งล่าช้า กรุณาเช็กเน็ตเวิร์กของเครื่องบันทึก', 'warning');
+                    termBadge.innerText = 'TIMEOUT';
+                    termBadge.className = 'badge danger';
+                    termProgText.innerText = 'NVR Agent ตอบรับล่าช้า หรือเครื่องบันทึกปิดระบบเน็ตเวิร์กอยู่';
+                    termLog.innerText += `\n[-] TIMEOUT EXPIRED: NVR did not respond within 3 minutes.\nCheck scheduled tasks on NVR Master node and try again.`;
+                    closeBtn.disabled = false;
+                    showToast('เครื่อง NVR ตอบรับคำสั่งล่าช้า กรุณาเช็กเซิร์ฟเวอร์หลัก', 'warning');
                     return;
                 }
                 
@@ -1258,32 +1282,73 @@
                     const cmdData = await rCheck.json();
                     
                     if (cmdData) {
+                        // 1. Live logs update
+                        if (cmdData.logs) {
+                            termLog.innerText = cmdData.logs;
+                            termLog.scrollTop = termLog.scrollHeight; // Auto scroll to bottom
+                        }
+                        
+                        // 2. Progressive indicators
+                        if (cmdData.progress !== undefined) {
+                            termBar.style.width = `${cmdData.progress}%`;
+                            termProgPct.innerText = `${cmdData.progress}%`;
+                        }
+                        if (cmdData.progress_text) {
+                            termProgText.innerText = cmdData.progress_text;
+                        }
+                        
+                        // 3. Status handling
                         if (cmdData.status === 'running') {
-                            btn.innerHTML = `<span class="spinner"></span> NVR กำลังประมวลผลคำสั่ง...`;
+                            termBadge.innerText = 'RUNNING';
+                            termBadge.className = 'badge info';
+                            btn.innerHTML = `<span class="spinner"></span> NVR กำลังทำงาน...`;
                         } else if (cmdData.status === 'completed') {
                             clearInterval(poller);
                             btn.disabled = false;
                             btn.innerHTML = origText;
+                            
+                            termBadge.innerText = 'SUCCESS';
+                            termBadge.className = 'badge success';
+                            termProgText.innerText = 'ดำเนินการเสร็จสิ้นสำเร็จ 100%!';
+                            termBar.style.width = '100%';
+                            termProgPct.innerText = '100%';
+                            closeBtn.disabled = false;
+                            
                             showToast(`NVR ดำเนินการสำเร็จ: ${cmdData.result}`, 'success');
                             fetchCloudTelemetry(); // Force sync frontend metrics instantly
                         } else if (cmdData.status === 'failed') {
                             clearInterval(poller);
                             btn.disabled = false;
                             btn.innerHTML = origText;
+                            
+                            termBadge.innerText = 'FAILED';
+                            termBadge.className = 'badge danger';
+                            termProgText.innerText = 'เกิดข้อผิดพลาดในการประมวลผลคำสั่ง';
+                            closeBtn.disabled = false;
+                            
                             showToast(`NVR แจ้งทำงานล้มเหลว: ${cmdData.result}`, 'error');
                         }
                     }
                 } catch (checkErr) {
                     console.error('Failed querying command queue status:', checkErr);
                 }
-            }, 5000);
+            }, 3000); // Poll every 3 seconds for low-latency feedback
             
         } catch (e) {
             console.error(e);
             btn.disabled = false;
             btn.innerHTML = origText;
+            termBadge.innerText = 'ERROR';
+            termBadge.className = 'badge danger';
+            termProgText.innerText = 'เกิดปัญหาในการยิงข้อมูลคลาวด์';
+            termLog.innerText += `\n[-] CRITICAL HTTP ERROR: ${e.message}`;
+            closeBtn.disabled = false;
             showToast(`สั่งงานล้มเหลว: ${e.message}`, 'error');
         }
+    }
+
+    function closeTerminalModal() {
+        document.getElementById('terminalModal').style.display = 'none';
     }
 
     // Interactive Search/Filter logic for Database
@@ -1320,6 +1385,37 @@
         }
     }
 </script>
+
+<!-- Retro Terminal Operations Progress Modal Overlay -->
+<div id="terminalModal" class="setup-wizard-overlay" style="display: none; justify-content: center; align-items: center; background: rgba(5, 8, 15, 0.94); z-index: 10000; position: fixed;">
+    <div class="glass-card" style="width: 100%; max-width: 650px; border: 1px solid var(--primary); box-shadow: 0 0 30px rgba(0, 255, 102, 0.15); text-align: left; padding: 25px;">
+        <div class="glass-card-header" style="margin-bottom: 15px; border-bottom: 1px solid var(--border-color); padding-bottom: 10px; display: flex; justify-content: space-between; align-items: center;">
+            <h2 style="font-family: 'Outfit', sans-serif; font-size: 16px; color: var(--primary); display: flex; align-items: center; gap: 10px;">
+                <span>📟</span> DUAL-NVR REMOTE SYSTEM CONSOLE
+            </h2>
+            <span class="badge warning" id="terminalStatusBadge">QUEUED</span>
+        </div>
+        
+        <div style="margin-bottom: 15px;">
+            <div style="display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 6px;">
+                <span id="terminalProgressText" style="color: var(--text-muted);">กำลังวิเคราะห์สิทธิ์และจัดเตรียมคำสั่ง...</span>
+                <span id="terminalProgressPct" style="color: var(--primary); font-weight: bold;">0%</span>
+            </div>
+            <div class="progress-container" style="background-color: rgba(255, 255, 255, 0.03); border: 1px solid var(--border-color); height: 12px;">
+                <div class="progress-bar green" id="terminalProgressBar" style="width: 0%"></div>
+            </div>
+        </div>
+
+        <div style="background-color: #030508; border: 1px solid var(--border-color); border-radius: 6px; padding: 15px; height: 280px; overflow-y: auto; font-family: 'Consolas', 'Courier New', monospace; font-size: 12px; color: #a9b7c6; line-height: 1.5; margin-bottom: 20px; white-space: pre-wrap;" id="terminalLogBox">
+[SYSTEM HANDSHAKE START]
+Initializing connection to Firebase Cloud Realtime Queue...
+        </div>
+
+        <div style="display: flex; justify-content: flex-end;">
+            <button class="btn" id="terminalCloseBtn" disabled onclick="closeTerminalModal()">ปิดหน้าต่างควบคุม (Close Console)</button>
+        </div>
+    </div>
+</div>
 
 </body>
 </html>
