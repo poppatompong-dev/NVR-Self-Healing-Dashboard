@@ -316,6 +316,8 @@
             flex-direction: column;
             align-items: center;
             width: 20%;
+            height: 100%;
+            justify-content: flex-end;
         }
 
         .chart-bar {
@@ -1123,21 +1125,22 @@
         document.getElementById('statSyncedPct').innerText = `${syncedPct}%`;
         document.getElementById('statSyncedRatio').innerText = `${syncedCount} / ${total} ซิงค์ตรงกับ NVR`;
 
-        // Update Dynamic Charts
+        // Update Dynamic Charts with proper vertical scaling for flex-end bottom layout
+        const scale = 0.75;
         const onlineBar = document.getElementById('chartOnlineBar');
-        onlineBar.style.height = `${onlinePct}%`;
+        onlineBar.style.height = `${onlinePct * scale}%`;
         onlineBar.setAttribute('data-val', `${onlinePct}%`);
         
         const syncedBar = document.getElementById('chartSyncedBar');
-        syncedBar.style.height = `${syncedPct}%`;
+        syncedBar.style.height = `${syncedPct * scale}%`;
         syncedBar.setAttribute('data-val', `${syncedPct}%`);
         
         const skewedBar = document.getElementById('chartSkewedBar');
-        skewedBar.style.height = `${skewedPct}%`;
+        skewedBar.style.height = `${skewedPct * scale}%`;
         skewedBar.setAttribute('data-val', `${skewedPct}%`);
         
         const offlineBar = document.getElementById('chartOfflineBar');
-        offlineBar.style.height = `${offlinePct}%`;
+        offlineBar.style.height = `${offlinePct * scale}%`;
         offlineBar.setAttribute('data-val', `${offlinePct}%`);
         
         // Update Chart description
